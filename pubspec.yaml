@@ -1,0 +1,26 @@
+name: longlink_ssh
+description: "Android-first SSH client with configurable long connection timeouts."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  dartssh2: 2.17.1
+  xterm: 4.0.0
+  shared_preferences: 2.5.5
+  flutter_secure_storage: 10.0.0
+  file_picker: 11.0.2
+  uuid: 4.5.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
