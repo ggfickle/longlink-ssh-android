@@ -8,6 +8,7 @@ Android-first Flutter SSH client for people who need longer connection timeouts 
 - Create, edit, and delete profiles
 - Support password auth and private key auth
 - Import private keys from a file or paste them directly from the clipboard
+- Generate a fresh ED25519 key pair inside the app and copy the public key for server setup
 - Store non-secret profile data in `shared_preferences`
 - Store password / private key / passphrase in `flutter_secure_storage`
 - Use `SSHSocket.connect(host, port, timeout: Duration(seconds: ...))` so each profile can set a longer connect timeout
@@ -20,7 +21,7 @@ Android-first Flutter SSH client for people who need longer connection timeouts 
 
 - **Android only**
 - MVP quality, intentionally straightforward
-- Current version: **0.1.1+2**
+- Current version: **0.1.2+3**
 
 ## Requirements
 
@@ -64,6 +65,7 @@ Each saved profile includes:
 - Auth type: password or private key
 - Password or private key
 - Private key import via file picker or clipboard paste
+- Built-in ED25519 key pair generation with public key copy support
 - Optional passphrase for encrypted private keys
 - Connection timeout in seconds
 - Keepalive interval in seconds
@@ -98,12 +100,13 @@ Local APK build status:
 
 ## Private key import note
 
-On Android, the system file picker often hides the `.ssh` folder because dot-prefixed folders are treated as hidden. This app now includes a **Paste from clipboard** shortcut for private keys, and file import reads the key content directly instead of relying on file extensions.
+On Android, the system file picker often hides the `.ssh` folder because dot-prefixed folders are treated as hidden. This app now includes a **Paste from clipboard** shortcut for private keys, built-in **Generate key pair** support, and file import reads the key content directly instead of relying on file extensions.
 
 If you still cannot browse to a key file:
 
 - copy the private key text and use **Paste from clipboard**, or
-- move/copy the key file into `Downloads` and import it from there.
+- move/copy the key file into `Downloads` and import it from there, or
+- tap **Generate key pair** and use the generated public key on your server.
 
 ## Known limitations
 

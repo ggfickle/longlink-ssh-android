@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/ssh_profile.dart';
+import '../services/ssh_key_service.dart';
 import '../services/ssh_profile_repository.dart';
 
 class ProfileFormPage extends StatefulWidget {
@@ -38,22 +39,28 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
   final _keepAliveController = TextEditingController(text: '15');
 
   final _uuid = const Uuid();
+  final _keyService = const SshKeyService();
 
   late SshAuthType _authType;
   bool _isLoading = false;
   bool _isSaving = false;
   bool _obscurePassword = true;
   bool _obscurePassphrase = true;
+  String? _publicKeyPreview;
 
   @override
   void initState() {
     super.initState();
     _authType = widget.initialProfile?.authType ?? SshAuthType.password;
+    _privateKeyController.addListener(_handleKeyMaterialChanged);
+    _passphraseController.addListener(_handleKeyMaterialChanged);
     _loadInitialValues();
   }
 
   @override
   void dispose() {
+    _privateKeyController.removeListener(_handleKeyMaterialChanged);
+    _passphraseController.removeListener(_handleKeyMaterialChanged);
     _displayNameController.dispose();
     _hostController.dispose();
     _portController.dispose();
@@ -94,6 +101,14 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
         setState(() => _isLoading = false);
       }
     }
+  }
+
+  void _handleKeyMaterialChanged() {
+    final next = _derivePublicKeyPreview();
+    if (next == _publicKeyPreview || !mounted) {
+      return;
+    }
+    setState(() => _publicKeyPreview = next);
   }
 
   Future<void> _pickPrivateKey() async {
@@ -181,6 +196,119 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _generateKeyPair() async {
+    final hasExistingKey = _privateKeyController.text.trim().isNotEmpty;
+    if (hasExistingKey) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Replace current private key?'),
+            content: const Text(
+              'Generating a new key will replace the private key currently in this form.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Replace'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (confirmed != true || !mounted) {
+        return;
+      }
+    }
+
+    final generated = _keyService.generateEd25519(
+      comment: _suggestKeyComment(),
+    );
+
+    setState(() {
+      _privateKeyController.text = generated.privateKeyPem;
+      _passphraseController.clear();
+      _publicKeyPreview = generated.publicKeyAuthorized;
+    });
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('New key generated'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'A new ED25519 key pair has been generated for this profile. '
+                  'Save the profile to keep the private key securely on this device.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 16),
+                const Text('Public key'),
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: SelectableText(generated.publicKeyAuthorized),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(
+                  ClipboardData(text: generated.publicKeyAuthorized),
+                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Public key copied.')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.copy),
+              label: const Text('Copy public key'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Done'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _copyPublicKey() async {
+    final publicKey = _publicKeyPreview;
+    if (publicKey == null || publicKey.isEmpty) {
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: publicKey));
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Public key copied.')));
+  }
+
   String _normalizePrivateKeyText(String contents) {
     return contents.replaceFirst('\uFEFF', '').trim();
   }
@@ -197,6 +325,45 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
     ];
 
     return markers.any(normalized.contains);
+  }
+
+  String _suggestKeyComment() {
+    final username = _usernameController.text.trim();
+    final host = _hostController.text.trim();
+    final displayName = _displayNameController.text.trim().replaceAll(
+      RegExp(r'\s+'),
+      '-',
+    );
+
+    if (username.isNotEmpty && host.isNotEmpty) {
+      return '$username@$host';
+    }
+    if (displayName.isNotEmpty) {
+      return '$displayName@longlink';
+    }
+    return 'longlink@android';
+  }
+
+  String? _derivePublicKeyPreview() {
+    final privateKey = _privateKeyController.text.trim();
+    if (privateKey.isEmpty) {
+      return null;
+    }
+
+    try {
+      return _keyService.deriveAuthorizedPublicKey(
+        privateKey,
+        passphrase: _blankToNull(_passphraseController.text),
+        fallbackComment: _suggestKeyComment(),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _blankToNull(String? value) {
+    final trimmed = value?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
   }
 
   Future<void> _save() async {
@@ -371,13 +538,18 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
                           icon: const Icon(Icons.content_paste),
                           label: const Text('Paste from clipboard'),
                         ),
+                        OutlinedButton.icon(
+                          onPressed: _generateKeyPair,
+                          icon: const Icon(Icons.key),
+                          label: const Text('Generate key pair'),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 8),
                     Text(
                       'Android file pickers often hide the .ssh folder because it starts with a dot. '
                       'If you cannot see your key file, copy the key text into the clipboard and tap “Paste from clipboard”, '
-                      'or move the key file into Downloads first. The app reads key content directly and does not rely on file extensions.',
+                      'move the key into Downloads first, or just let LongLink generate a new ED25519 key pair for you.',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const SizedBox(height: 12),
@@ -410,6 +582,41 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
                         ),
                       ),
                     ),
+                    if (_publicKeyPreview != null &&
+                        _publicKeyPreview!.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Public key',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: _copyPublicKey,
+                            icon: const Icon(Icons.copy),
+                            label: const Text('Copy'),
+                          ),
+                        ],
+                      ),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: SelectableText(_publicKeyPreview!),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Add this public key to the server\'s authorized_keys. For generated keys, this is the line you need on the server side.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
                   ],
                   const SizedBox(height: 12),
                   Row(
