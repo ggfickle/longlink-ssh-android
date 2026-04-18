@@ -223,6 +223,18 @@ class _TerminalPageState extends State<TerminalPage> {
     _session?.write(Uint8List.fromList(utf8.encode(text)));
   }
 
+  void _sendTmuxPrefix() {
+    _sendShortcut('\x01');
+  }
+
+  void _sendTmuxDetach() {
+    _sendShortcut('\x01d');
+  }
+
+  void _sendEnter() {
+    _sendShortcut('\r');
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -322,10 +334,13 @@ class _TerminalPageState extends State<TerminalPage> {
                     label: 'Esc',
                     onTap: () => _sendShortcut('\x1b'),
                   ),
+                  _ShortcutButton(label: 'Enter', onTap: _sendEnter),
                   _ShortcutButton(
                     label: 'Ctrl+C',
                     onTap: () => _sendShortcut('\x03'),
                   ),
+                  _ShortcutButton(label: 'tmux C-a', onTap: _sendTmuxPrefix),
+                  _ShortcutButton(label: 'tmux detach', onTap: _sendTmuxDetach),
                   _ShortcutButton(
                     label: '↑',
                     onTap: () => _sendShortcut('\x1b[A'),

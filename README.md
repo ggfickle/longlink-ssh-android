@@ -15,13 +15,14 @@ Android-first Flutter SSH client for people who need longer connection timeouts 
 - Use `SSHClient keepAliveInterval` from the saved profile
 - Open an interactive remote shell with `dartssh2` + `xterm`
 - Show connection status and connection failure messages clearly
-- Add a small Android-friendly shortcut row for Tab / Esc / Ctrl+C / arrows
+- Add a small Android-friendly shortcut row for Tab / Esc / Enter / Ctrl+C / arrows
+- Add tmux-oriented quick buttons, including `tmux C-a` and one-tap `tmux detach`
 
 ## Current scope
 
 - **Android only**
 - MVP quality, intentionally straightforward
-- Current version: **0.1.4+5**
+- Current version: **0.1.5+6**
 
 ## Requirements
 

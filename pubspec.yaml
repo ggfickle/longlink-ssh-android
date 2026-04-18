@@ -1,7 +1,7 @@
 name: longlink_ssh
 description: "Android-first SSH client with configurable long connection timeouts."
 publish_to: 'none'
-version: 0.1.4+5
+version: 0.1.5+6
 
 environment:
   sdk: ^3.11.5
