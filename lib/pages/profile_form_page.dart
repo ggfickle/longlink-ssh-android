@@ -117,13 +117,14 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
         contents = await File(pickedFile.path!).readAsString();
       }
 
-      if (!mounted || contents == null || contents.trim().isEmpty) {
+      if (!mounted || contents == null) {
         return;
       }
 
-      setState(() {
-        _privateKeyController.text = contents!;
-      });
+      _importPrivateKeyText(
+        contents,
+        source: pickedFile.name.isNotEmpty ? pickedFile.name : 'file',
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -132,6 +133,70 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
         SnackBar(content: Text('Failed to import key file: $error')),
       );
     }
+  }
+
+  Future<void> _pastePrivateKeyFromClipboard() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      if (!mounted) {
+        return;
+      }
+
+      final contents = data?.text;
+      if (contents == null || contents.trim().isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Clipboard is empty.')));
+        return;
+      }
+
+      _importPrivateKeyText(contents, source: 'clipboard');
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to read clipboard: $error')),
+      );
+    }
+  }
+
+  void _importPrivateKeyText(String contents, {required String source}) {
+    final normalized = _normalizePrivateKeyText(contents);
+    if (normalized.isEmpty || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _privateKeyController.text = normalized;
+    });
+
+    final recognized = _looksLikePrivateKey(normalized);
+    final message = recognized
+        ? 'Imported private key from $source'
+        : 'Imported text from $source. If login fails, paste an OpenSSH private key block.';
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String _normalizePrivateKeyText(String contents) {
+    return contents.replaceFirst('\uFEFF', '').trim();
+  }
+
+  bool _looksLikePrivateKey(String contents) {
+    final normalized = contents.trim();
+    const markers = [
+      'BEGIN OPENSSH PRIVATE KEY',
+      'BEGIN RSA PRIVATE KEY',
+      'BEGIN EC PRIVATE KEY',
+      'BEGIN DSA PRIVATE KEY',
+      'BEGIN PRIVATE KEY',
+      'PuTTY-User-Key-File-',
+    ];
+
+    return markers.any(normalized.contains);
   }
 
   Future<void> _save() async {
@@ -292,10 +357,28 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
                       validator: _secretRequiredValidator,
                     ),
                   ] else ...[
-                    FilledButton.tonalIcon(
-                      onPressed: _pickPrivateKey,
-                      icon: const Icon(Icons.file_open),
-                      label: const Text('Import private key file'),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        FilledButton.tonalIcon(
+                          onPressed: _pickPrivateKey,
+                          icon: const Icon(Icons.file_open),
+                          label: const Text('Import key file'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _pastePrivateKeyFromClipboard,
+                          icon: const Icon(Icons.content_paste),
+                          label: const Text('Paste from clipboard'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Android file pickers often hide the .ssh folder because it starts with a dot. '
+                      'If you cannot see your key file, copy the key text into the clipboard and tap “Paste from clipboard”, '
+                      'or move the key file into Downloads first. The app reads key content directly and does not rely on file extensions.',
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const SizedBox(height: 12),
                     TextFormField(

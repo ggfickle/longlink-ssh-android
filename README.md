@@ -7,6 +7,7 @@ Android-first Flutter SSH client for people who need longer connection timeouts 
 - Save SSH profiles on device
 - Create, edit, and delete profiles
 - Support password auth and private key auth
+- Import private keys from a file or paste them directly from the clipboard
 - Store non-secret profile data in `shared_preferences`
 - Store password / private key / passphrase in `flutter_secure_storage`
 - Use `SSHSocket.connect(host, port, timeout: Duration(seconds: ...))` so each profile can set a longer connect timeout
@@ -19,7 +20,7 @@ Android-first Flutter SSH client for people who need longer connection timeouts 
 
 - **Android only**
 - MVP quality, intentionally straightforward
-- Version stays at **0.1.0+1**
+- Current version: **0.1.1+2**
 
 ## Requirements
 
@@ -62,6 +63,7 @@ Each saved profile includes:
 - Username
 - Auth type: password or private key
 - Password or private key
+- Private key import via file picker or clipboard paste
 - Optional passphrase for encrypted private keys
 - Connection timeout in seconds
 - Keepalive interval in seconds
@@ -93,6 +95,15 @@ Validated in this environment:
 Local APK build status:
 
 - `flutter build apk --release` ❌ blocked in this environment because no Android SDK is installed (`No Android SDK found. Try setting the ANDROID_HOME environment variable.`)
+
+## Private key import note
+
+On Android, the system file picker often hides the `.ssh` folder because dot-prefixed folders are treated as hidden. This app now includes a **Paste from clipboard** shortcut for private keys, and file import reads the key content directly instead of relying on file extensions.
+
+If you still cannot browse to a key file:
+
+- copy the private key text and use **Paste from clipboard**, or
+- move/copy the key file into `Downloads` and import it from there.
 
 ## Known limitations
 
