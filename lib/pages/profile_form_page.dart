@@ -272,6 +272,22 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
             TextButton.icon(
               onPressed: () async {
                 await Clipboard.setData(
+                  ClipboardData(text: generated.privateKeyPem),
+                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Private key copied. Keep it safe.'),
+                    ),
+                  );
+                }
+              },
+              icon: const Icon(Icons.key),
+              label: const Text('Copy private key'),
+            ),
+            TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(
                   ClipboardData(text: generated.publicKeyAuthorized),
                 );
                 if (context.mounted) {
@@ -290,6 +306,22 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
           ],
         );
       },
+    );
+  }
+
+  Future<void> _copyPrivateKey() async {
+    final privateKey = _privateKeyController.text.trim();
+    if (privateKey.isEmpty) {
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: privateKey));
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Private key copied. Keep it safe.')),
     );
   }
 
@@ -564,6 +596,17 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
                       ),
                       validator: _secretRequiredValidator,
                     ),
+                    if (_privateKeyController.text.trim().isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: _copyPrivateKey,
+                          icon: const Icon(Icons.key),
+                          label: const Text('Copy private key'),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: _passphraseController,
