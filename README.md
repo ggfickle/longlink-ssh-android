@@ -21,7 +21,7 @@ Android-first Flutter SSH client for people who need longer connection timeouts 
 
 - **Android only**
 - MVP quality, intentionally straightforward
-- Current version: **0.1.3+4**
+- Current version: **0.1.4+5**
 
 ## Requirements
 

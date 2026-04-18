@@ -18,12 +18,12 @@ class SshProfileRepository {
     final encoded = preferences.getString(_profilesStorageKey);
 
     if (encoded == null || encoded.isEmpty) {
-      return const [];
+      return <SshProfile>[];
     }
 
     final decoded = jsonDecode(encoded);
     if (decoded is! List) {
-      return const [];
+      return <SshProfile>[];
     }
 
     return decoded
