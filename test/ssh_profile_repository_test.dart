@@ -9,10 +9,14 @@ import 'package:longlink_ssh/services/ssh_profile_repository.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('saveProfile works when there are no existing profiles yet', () async {
+  setUp(() {
     SharedPreferences.setMockInitialValues({});
-    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform({});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+  });
 
+  test('saveProfile works when there are no existing profiles yet', () async {
     final repository = SshProfileRepository();
     final profile = SshProfile(
       id: 'oracle-root',
@@ -35,4 +39,40 @@ void main() {
     expect(profiles.single.displayName, 'Oracle');
     expect(profiles.single.host, '129.80.64.224');
   });
+
+  test(
+    'saveProfile persists reusable key references and clears inline key secrets',
+    () async {
+      final repository = SshProfileRepository();
+      final inlineProfile = SshProfile(
+        id: 'shared-key-profile',
+        displayName: 'Shared key target',
+        host: 'example.com',
+        port: 22,
+        username: 'root',
+        authType: SshAuthType.privateKey,
+        connectionTimeoutSeconds: 30,
+        keepAliveIntervalSeconds: 15,
+      );
+
+      await repository.saveProfile(
+        inlineProfile,
+        const SshProfileSecrets(
+          privateKey: 'INLINE_PRIVATE_KEY',
+          passphrase: 'inline-passphrase',
+        ),
+      );
+
+      final reusableProfile = inlineProfile.copyWith(reusableKeyId: 'key-123');
+      await repository.saveProfile(reusableProfile, const SshProfileSecrets());
+
+      final profiles = await repository.loadProfiles();
+      expect(profiles.single.reusableKeyId, 'key-123');
+      expect(profiles.single.usesReusableKey, isTrue);
+
+      final secrets = await repository.loadSecrets(reusableProfile.id);
+      expect(secrets.privateKey, isNull);
+      expect(secrets.passphrase, isNull);
+    },
+  );
 }

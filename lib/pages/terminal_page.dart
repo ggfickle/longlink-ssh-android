@@ -1,257 +1,150 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
-import 'dart:typed_data';
 
-import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
-import '../models/ssh_profile.dart';
+import '../services/live_ssh_session_manager.dart';
 
 class TerminalPage extends StatefulWidget {
-  const TerminalPage({super.key, required this.profile, required this.secrets});
+  const TerminalPage({
+    super.key,
+    required this.session,
+    required this.connectOnOpen,
+  });
 
-  final SshProfile profile;
-  final SshProfileSecrets secrets;
+  final LiveSshSessionController session;
+  final bool connectOnOpen;
 
   @override
   State<TerminalPage> createState() => _TerminalPageState();
 }
 
-enum _ConnectionState { connecting, connected, disconnected, error }
-
 class _TerminalPageState extends State<TerminalPage> {
-  late final Terminal _terminal;
-
-  SSHClient? _client;
-  SSHSession? _session;
-  StreamSubscription<String>? _stdoutSubscription;
-  StreamSubscription<String>? _stderrSubscription;
-  StreamSubscription<void>? _doneSubscription;
-
-  _ConnectionState _connectionState = _ConnectionState.connecting;
-  String _statusText = 'Connecting...';
-  String _title = 'Terminal';
-  bool _isConnecting = false;
-
   @override
   void initState() {
     super.initState();
-    _terminal = Terminal(maxLines: 10000);
-    _connect();
+    widget.session.addListener(_handleSessionChanged);
+    widget.session.attachUi();
+    if (widget.connectOnOpen) {
+      unawaited(widget.session.ensureConnected());
+    }
   }
 
   @override
   void dispose() {
-    unawaited(_disconnect());
-    _stdoutSubscription?.cancel();
-    _stderrSubscription?.cancel();
-    _doneSubscription?.cancel();
+    widget.session.removeListener(_handleSessionChanged);
+    widget.session.detachUi();
     super.dispose();
   }
 
-  Future<void> _connect() async {
-    if (_isConnecting) {
+  void _handleSessionChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _handleMenuAction(_TerminalAction action) async {
+    switch (action) {
+      case _TerminalAction.suspend:
+        if (mounted) {
+          Navigator.of(context).pop();
+        }
+        break;
+      case _TerminalAction.reconnect:
+        await _confirmAndReconnect();
+        break;
+      case _TerminalAction.disconnect:
+        await _confirmAndDisconnect();
+        break;
+    }
+  }
+
+  Future<void> _confirmAndReconnect() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reconnect session?'),
+        content: Text('Reconnect ${widget.session.profile.displayName} now?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Reconnect'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) {
       return;
     }
 
-    setState(() {
-      _isConnecting = true;
-      _connectionState = _ConnectionState.connecting;
-      _statusText =
-          'Connecting to ${widget.profile.host}:${widget.profile.port}...';
-      _title = widget.profile.displayName;
-    });
+    await widget.session.reconnect();
+  }
 
-    _terminal.buffer.clear();
-    _terminal.buffer.setCursor(0, 0);
-    _terminal.write('LongLink SSH\r\n');
-    _terminal.write(
-      'Target: ${widget.profile.username}@${widget.profile.host}:${widget.profile.port}\r\n',
+  Future<void> _confirmAndDisconnect() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Disconnect session?'),
+        content: Text('Close ${widget.session.profile.displayName} now?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Disconnect'),
+          ),
+        ],
+      ),
     );
-    _terminal.write('Timeout: ${widget.profile.connectionTimeoutSeconds}s\r\n');
-    _terminal.write(
-      'Keepalive: ${widget.profile.keepAliveIntervalSeconds}s\r\n\r\n',
-    );
-    _terminal.write('Connecting...\r\n');
 
-    try {
-      await _disconnect();
-
-      final identities = widget.profile.authType == SshAuthType.privateKey
-          ? SSHKeyPair.fromPem(
-              widget.secrets.privateKey ?? '',
-              _blankToNull(widget.secrets.passphrase),
-            )
-          : null;
-
-      if (widget.profile.authType == SshAuthType.privateKey &&
-          (identities == null || identities.isEmpty)) {
-        throw StateError('No private key could be parsed from the saved PEM.');
-      }
-
-      final socket = await SSHSocket.connect(
-        widget.profile.host,
-        widget.profile.port,
-        timeout: Duration(seconds: widget.profile.connectionTimeoutSeconds),
-      );
-
-      final client = SSHClient(
-        socket,
-        username: widget.profile.username,
-        identities: identities,
-        onPasswordRequest: widget.profile.authType == SshAuthType.password
-            ? () => widget.secrets.password ?? ''
-            : null,
-        keepAliveInterval: widget.profile.keepAliveIntervalSeconds > 0
-            ? Duration(seconds: widget.profile.keepAliveIntervalSeconds)
-            : null,
-        onVerifyHostKey: _acceptHostKeyForMvp,
-      );
-
-      await client.authenticated;
-
-      final session = await client.shell(
-        pty: SSHPtyConfig(
-          type: 'xterm-256color',
-          width: max(_terminal.viewWidth, 80),
-          height: max(_terminal.viewHeight, 24),
-        ),
-      );
-
-      _client = client;
-      _session = session;
-
-      _terminal.onTitleChange = (title) {
-        if (!mounted || title.isEmpty) {
-          return;
-        }
-        setState(() => _title = title);
-      };
-
-      _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-        _session?.resizeTerminal(width, height, pixelWidth, pixelHeight);
-      };
-
-      _terminal.onOutput = (data) {
-        _session?.write(Uint8List.fromList(utf8.encode(data)));
-      };
-
-      _stdoutSubscription = session.stdout
-          .cast<List<int>>()
-          .transform(const Utf8Decoder())
-          .listen(_terminal.write);
-
-      _stderrSubscription = session.stderr
-          .cast<List<int>>()
-          .transform(const Utf8Decoder())
-          .listen(_terminal.write);
-
-      _doneSubscription = session.done.asStream().listen((_) {
-        final exitCode = session.exitCode;
-        final signal = session.exitSignal;
-        final details = exitCode != null
-            ? 'Remote shell closed with exit code $exitCode.'
-            : signal != null
-            ? 'Remote shell closed with signal ${signal.signalName}.'
-            : 'Remote shell closed.';
-
-        if (mounted) {
-          setState(() {
-            _connectionState = _ConnectionState.disconnected;
-            _statusText = details;
-          });
-        }
-
-        _terminal.write('\r\n\r\n$details\r\n');
-      });
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _connectionState = _ConnectionState.connected;
-        _statusText = 'Connected';
-        _title = widget.profile.displayName;
-      });
-
-      _terminal.write('Connected.\r\n\r\n');
-    } catch (error) {
-      await _disconnect();
-      _terminal.write('Connection failed: $error\r\n');
-      if (mounted) {
-        setState(() {
-          _connectionState = _ConnectionState.error;
-          _statusText = 'Connection failed: $error';
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isConnecting = false);
-      }
+    if (confirmed != true) {
+      return;
     }
-  }
 
-  Future<void> _disconnect() async {
-    _terminal.onOutput = null;
-    _terminal.onResize = null;
-
-    await _stdoutSubscription?.cancel();
-    await _stderrSubscription?.cancel();
-    await _doneSubscription?.cancel();
-    _stdoutSubscription = null;
-    _stderrSubscription = null;
-    _doneSubscription = null;
-
-    _session?.close();
-    _session = null;
-
-    _client?.close();
-    await _client?.done.catchError((_) {});
-    _client = null;
-  }
-
-  FutureOr<bool> _acceptHostKeyForMvp(String type, Uint8List fingerprint) {
-    // MVP trade-off: auto-accept host keys so users can connect quickly.
-    // Replace this with known_hosts style verification in a future version.
-    return true;
-  }
-
-  void _sendShortcut(String text) {
-    _session?.write(Uint8List.fromList(utf8.encode(text)));
-  }
-
-  void _sendTmuxPrefix() {
-    _sendShortcut('\x01');
-  }
-
-  void _sendTmuxDetach() {
-    _sendShortcut('\x01d');
-  }
-
-  void _sendEnter() {
-    _sendShortcut('\r');
+    await widget.session.close();
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final session = widget.session;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(_title),
+        title: Text(session.title),
         actions: [
-          IconButton(
-            onPressed: _isConnecting ? null : _connect,
-            tooltip: 'Reconnect',
-            icon: const Icon(Icons.refresh),
+          PopupMenuButton<_TerminalAction>(
+            onSelected: _handleMenuAction,
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: _TerminalAction.suspend,
+                child: Text('Suspend and go back'),
+              ),
+              PopupMenuItem(
+                value: _TerminalAction.reconnect,
+                child: Text('Reconnect'),
+              ),
+              PopupMenuItem(
+                value: _TerminalAction.disconnect,
+                child: Text('Disconnect'),
+              ),
+            ],
           ),
         ],
       ),
       body: Column(
         children: [
           Material(
-            color: _statusColor(context),
+            color: _statusColor(context, session.state),
             child: SafeArea(
               bottom: false,
               child: Padding(
@@ -263,14 +156,14 @@ class _TerminalPageState extends State<TerminalPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Icon(
-                      _statusIcon(),
+                      _statusIcon(session.state),
                       size: 20,
                       color: Theme.of(context).colorScheme.onPrimaryContainer,
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        _statusText,
+                        session.statusText,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: Theme.of(
                             context,
@@ -288,7 +181,7 @@ class _TerminalPageState extends State<TerminalPage> {
               color: Colors.black,
               padding: const EdgeInsets.all(8),
               child: TerminalView(
-                _terminal,
+                session.terminal,
                 autofocus: true,
                 backgroundOpacity: 1,
                 theme: const TerminalTheme(
@@ -328,34 +221,40 @@ class _TerminalPageState extends State<TerminalPage> {
                 children: [
                   _ShortcutButton(
                     label: 'Tab',
-                    onTap: () => _sendShortcut('\t'),
+                    onTap: () => session.sendShortcut('\t'),
                   ),
                   _ShortcutButton(
                     label: 'Esc',
-                    onTap: () => _sendShortcut('\x1b'),
+                    onTap: () => session.sendShortcut('\x1b'),
                   ),
-                  _ShortcutButton(label: 'Enter', onTap: _sendEnter),
+                  _ShortcutButton(label: 'Enter', onTap: session.sendEnter),
                   _ShortcutButton(
                     label: 'Ctrl+C',
-                    onTap: () => _sendShortcut('\x03'),
+                    onTap: () => session.sendShortcut('\x03'),
                   ),
-                  _ShortcutButton(label: 'tmux C-a', onTap: _sendTmuxPrefix),
-                  _ShortcutButton(label: 'tmux detach', onTap: _sendTmuxDetach),
+                  _ShortcutButton(
+                    label: 'tmux C-a',
+                    onTap: session.sendTmuxPrefix,
+                  ),
+                  _ShortcutButton(
+                    label: 'tmux detach',
+                    onTap: session.sendTmuxDetach,
+                  ),
                   _ShortcutButton(
                     label: '↑',
-                    onTap: () => _sendShortcut('\x1b[A'),
+                    onTap: () => session.sendShortcut('\x1b[A'),
                   ),
                   _ShortcutButton(
                     label: '↓',
-                    onTap: () => _sendShortcut('\x1b[B'),
+                    onTap: () => session.sendShortcut('\x1b[B'),
                   ),
                   _ShortcutButton(
                     label: '←',
-                    onTap: () => _sendShortcut('\x1b[D'),
+                    onTap: () => session.sendShortcut('\x1b[D'),
                   ),
                   _ShortcutButton(
                     label: '→',
-                    onTap: () => _sendShortcut('\x1b[C'),
+                    onTap: () => session.sendShortcut('\x1b[C'),
                   ),
                 ],
               ),
@@ -366,40 +265,38 @@ class _TerminalPageState extends State<TerminalPage> {
     );
   }
 
-  Color _statusColor(BuildContext context) {
+  Color _statusColor(BuildContext context, LiveSshSessionState state) {
     final scheme = Theme.of(context).colorScheme;
-    switch (_connectionState) {
-      case _ConnectionState.connecting:
+    switch (state) {
+      case LiveSshSessionState.connecting:
         return scheme.secondaryContainer;
-      case _ConnectionState.connected:
+      case LiveSshSessionState.active:
+      case LiveSshSessionState.suspended:
         return scheme.primaryContainer;
-      case _ConnectionState.disconnected:
+      case LiveSshSessionState.disconnected:
         return scheme.tertiaryContainer;
-      case _ConnectionState.error:
+      case LiveSshSessionState.error:
         return scheme.errorContainer;
     }
   }
 
-  IconData _statusIcon() {
-    switch (_connectionState) {
-      case _ConnectionState.connecting:
+  IconData _statusIcon(LiveSshSessionState state) {
+    switch (state) {
+      case LiveSshSessionState.connecting:
         return Icons.sync;
-      case _ConnectionState.connected:
+      case LiveSshSessionState.active:
         return Icons.check_circle;
-      case _ConnectionState.disconnected:
+      case LiveSshSessionState.suspended:
+        return Icons.pause_circle;
+      case LiveSshSessionState.disconnected:
         return Icons.link_off;
-      case _ConnectionState.error:
+      case LiveSshSessionState.error:
         return Icons.error;
     }
   }
-
-  String? _blankToNull(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return null;
-    }
-    return value;
-  }
 }
+
+enum _TerminalAction { suspend, reconnect, disconnect }
 
 class _ShortcutButton extends StatelessWidget {
   const _ShortcutButton({required this.label, required this.onTap});

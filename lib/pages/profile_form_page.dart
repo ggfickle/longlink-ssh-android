@@ -7,17 +7,24 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/ssh_profile.dart';
+import '../models/ssh_stored_key.dart';
 import '../services/ssh_key_service.dart';
+import '../services/ssh_keychain_repository.dart';
 import '../services/ssh_profile_repository.dart';
+import 'ssh_keychain_page.dart';
+
+enum _PrivateKeyStorageMode { inline, reusable }
 
 class ProfileFormPage extends StatefulWidget {
   const ProfileFormPage({
     super.key,
     required this.repository,
+    required this.keychainRepository,
     this.initialProfile,
   });
 
   final SshProfileRepository repository;
+  final SshKeychainRepository keychainRepository;
   final SshProfile? initialProfile;
 
   bool get isEditing => initialProfile != null;
@@ -42,16 +49,37 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
   final _keyService = const SshKeyService();
 
   late SshAuthType _authType;
+  late _PrivateKeyStorageMode _privateKeyStorageMode;
   bool _isLoading = false;
   bool _isSaving = false;
   bool _obscurePassword = true;
   bool _obscurePassphrase = true;
   String? _publicKeyPreview;
+  String? _selectedReusableKeyId;
+  List<SshStoredKey> _availableKeys = const [];
+
+  SshStoredKey? get _selectedReusableKey {
+    final selectedId = _selectedReusableKeyId;
+    if (selectedId == null) {
+      return null;
+    }
+    for (final key in _availableKeys) {
+      if (key.id == selectedId) {
+        return key;
+      }
+    }
+    return null;
+  }
 
   @override
   void initState() {
     super.initState();
-    _authType = widget.initialProfile?.authType ?? SshAuthType.password;
+    final initialProfile = widget.initialProfile;
+    _authType = initialProfile?.authType ?? SshAuthType.password;
+    _privateKeyStorageMode = initialProfile?.usesReusableKey == true
+        ? _PrivateKeyStorageMode.reusable
+        : _PrivateKeyStorageMode.inline;
+    _selectedReusableKeyId = initialProfile?.reusableKeyId;
     _privateKeyController.addListener(_handleKeyMaterialChanged);
     _passphraseController.addListener(_handleKeyMaterialChanged);
     _loadInitialValues();
@@ -75,40 +103,78 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
 
   Future<void> _loadInitialValues() async {
     final profile = widget.initialProfile;
-    if (profile == null) {
-      return;
+    if (profile != null) {
+      _displayNameController.text = profile.displayName;
+      _hostController.text = profile.host;
+      _portController.text = profile.port.toString();
+      _usernameController.text = profile.username;
+      _timeoutController.text = profile.connectionTimeoutSeconds.toString();
+      _keepAliveController.text = profile.keepAliveIntervalSeconds.toString();
     }
-
-    _displayNameController.text = profile.displayName;
-    _hostController.text = profile.host;
-    _portController.text = profile.port.toString();
-    _usernameController.text = profile.username;
-    _timeoutController.text = profile.connectionTimeoutSeconds.toString();
-    _keepAliveController.text = profile.keepAliveIntervalSeconds.toString();
 
     setState(() => _isLoading = true);
 
     try {
-      final secrets = await widget.repository.loadSecrets(profile.id);
+      final keys = await widget.keychainRepository.loadKeys();
       if (!mounted) {
         return;
       }
-      _passwordController.text = secrets.password ?? '';
-      _privateKeyController.text = secrets.privateKey ?? '';
-      _passphraseController.text = secrets.passphrase ?? '';
+      _availableKeys = keys;
+
+      if (profile != null && !profile.usesReusableKey) {
+        final secrets = await widget.repository.loadSecrets(profile.id);
+        if (!mounted) {
+          return;
+        }
+        _passwordController.text = secrets.password ?? '';
+        _privateKeyController.text = secrets.privateKey ?? '';
+        _passphraseController.text = secrets.passphrase ?? '';
+      }
+
+      if (_selectedReusableKeyId != null &&
+          !_availableKeys.any((key) => key.id == _selectedReusableKeyId)) {
+        _selectedReusableKeyId = null;
+      }
     } finally {
       if (mounted) {
-        setState(() => _isLoading = false);
+        setState(() {
+          _isLoading = false;
+        });
       }
     }
   }
 
   void _handleKeyMaterialChanged() {
+    if (_privateKeyStorageMode != _PrivateKeyStorageMode.inline) {
+      return;
+    }
+
     final next = _derivePublicKeyPreview();
     if (next == _publicKeyPreview || !mounted) {
       return;
     }
     setState(() => _publicKeyPreview = next);
+  }
+
+  Future<void> _openKeychain() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SshKeychainPage(repository: widget.keychainRepository),
+      ),
+    );
+
+    final keys = await widget.keychainRepository.loadKeys();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _availableKeys = keys;
+      if (_selectedReusableKeyId != null &&
+          !_availableKeys.any((key) => key.id == _selectedReusableKeyId)) {
+        _selectedReusableKeyId = null;
+      }
+    });
   }
 
   Future<void> _pickPrivateKey() async {
@@ -177,12 +243,13 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
   }
 
   void _importPrivateKeyText(String contents, {required String source}) {
-    final normalized = _normalizePrivateKeyText(contents);
+    final normalized = contents.replaceFirst('\uFEFF', '').trim();
     if (normalized.isEmpty || !mounted) {
       return;
     }
 
     setState(() {
+      _privateKeyStorageMode = _PrivateKeyStorageMode.inline;
       _privateKeyController.text = normalized;
     });
 
@@ -201,24 +268,22 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
     if (hasExistingKey) {
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (context) {
-          return AlertDialog(
-            title: const Text('Replace current private key?'),
-            content: const Text(
-              'Generating a new key will replace the private key currently in this form.',
+        builder: (context) => AlertDialog(
+          title: const Text('Replace current private key?'),
+          content: const Text(
+            'Generating a new key will replace the private key currently in this form.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Replace'),
-              ),
-            ],
-          );
-        },
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Replace'),
+            ),
+          ],
+        ),
       );
 
       if (confirmed != true || !mounted) {
@@ -231,6 +296,7 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
     );
 
     setState(() {
+      _privateKeyStorageMode = _PrivateKeyStorageMode.inline;
       _privateKeyController.text = generated.privateKeyPem;
       _passphraseController.clear();
       _publicKeyPreview = generated.publicKeyAuthorized;
@@ -238,74 +304,69 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
 
     await showDialog<void>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('New key generated'),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'A new ED25519 key pair has been generated for this profile. '
-                  'Save the profile to keep the private key securely on this device.',
-                  style: Theme.of(context).textTheme.bodyMedium,
+      builder: (context) => AlertDialog(
+        title: const Text('New key generated'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'A new ED25519 key pair has been generated for this profile. Save the profile to keep the private key securely on this device.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 16),
+              const Text('Public key'),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                const SizedBox(height: 16),
-                const Text('Public key'),
-                const SizedBox(height: 8),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: SelectableText(generated.publicKeyAuthorized),
-                ),
-              ],
-            ),
+                child: SelectableText(generated.publicKeyAuthorized),
+              ),
+            ],
           ),
-          actions: [
-            TextButton.icon(
-              onPressed: () async {
-                await Clipboard.setData(
-                  ClipboardData(text: generated.privateKeyPem),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(
+                ClipboardData(text: generated.privateKeyPem),
+              );
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Private key copied. Keep it safe.'),
+                  ),
                 );
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Private key copied. Keep it safe.'),
-                    ),
-                  );
-                }
-              },
-              icon: const Icon(Icons.key),
-              label: const Text('Copy private key'),
-            ),
-            TextButton.icon(
-              onPressed: () async {
-                await Clipboard.setData(
-                  ClipboardData(text: generated.publicKeyAuthorized),
+              }
+            },
+            icon: const Icon(Icons.key),
+            label: const Text('Copy private key'),
+          ),
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(
+                ClipboardData(text: generated.publicKeyAuthorized),
+              );
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Public key copied.')),
                 );
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Public key copied.')),
-                  );
-                }
-              },
-              icon: const Icon(Icons.copy),
-              label: const Text('Copy public key'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Done'),
-            ),
-          ],
-        );
-      },
+              }
+            },
+            icon: const Icon(Icons.copy),
+            label: const Text('Copy public key'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -326,7 +387,10 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
   }
 
   Future<void> _copyPublicKey() async {
-    final publicKey = _publicKeyPreview;
+    final publicKey = _privateKeyStorageMode == _PrivateKeyStorageMode.reusable
+        ? _selectedReusableKey?.publicKey
+        : _publicKeyPreview;
+
     if (publicKey == null || publicKey.isEmpty) {
       return;
     }
@@ -339,10 +403,6 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Public key copied.')));
-  }
-
-  String _normalizePrivateKeyText(String contents) {
-    return contents.replaceFirst('\uFEFF', '').trim();
   }
 
   bool _looksLikePrivateKey(String contents) {
@@ -403,6 +463,15 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
       return;
     }
 
+    if (_authType == SshAuthType.privateKey &&
+        _privateKeyStorageMode == _PrivateKeyStorageMode.reusable &&
+        _selectedReusableKeyId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Choose a shared key first.')),
+      );
+      return;
+    }
+
     setState(() => _isSaving = true);
 
     try {
@@ -415,16 +484,25 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
         authType: _authType,
         connectionTimeoutSeconds: int.parse(_timeoutController.text.trim()),
         keepAliveIntervalSeconds: int.parse(_keepAliveController.text.trim()),
+        reusableKeyId:
+            _authType == SshAuthType.privateKey &&
+                _privateKeyStorageMode == _PrivateKeyStorageMode.reusable
+            ? _selectedReusableKeyId
+            : null,
       );
 
       final secrets = SshProfileSecrets(
         password: _authType == SshAuthType.password
             ? _passwordController.text
             : null,
-        privateKey: _authType == SshAuthType.privateKey
+        privateKey:
+            _authType == SshAuthType.privateKey &&
+                _privateKeyStorageMode == _PrivateKeyStorageMode.inline
             ? _privateKeyController.text
             : null,
-        passphrase: _authType == SshAuthType.privateKey
+        passphrase:
+            _authType == SshAuthType.privateKey &&
+                _privateKeyStorageMode == _PrivateKeyStorageMode.inline
             ? _passphraseController.text
             : null,
       );
@@ -452,6 +530,9 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
 
   @override
   Widget build(BuildContext context) {
+    final selectedReusableKey = _selectedReusableKey;
+    final reusablePublicKey = selectedReusableKey?.publicKey;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.isEditing ? 'Edit profile' : 'New profile'),
@@ -556,77 +637,192 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
                       validator: _secretRequiredValidator,
                     ),
                   ] else ...[
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        FilledButton.tonalIcon(
-                          onPressed: _pickPrivateKey,
-                          icon: const Icon(Icons.file_open),
-                          label: const Text('Import key file'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _pastePrivateKeyFromClipboard,
-                          icon: const Icon(Icons.content_paste),
-                          label: const Text('Paste from clipboard'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _generateKeyPair,
-                          icon: const Icon(Icons.key),
-                          label: const Text('Generate key pair'),
-                        ),
-                      ],
+                    Text(
+                      'Private key source',
+                      style: Theme.of(context).textTheme.titleSmall,
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      'Android file pickers often hide the .ssh folder because it starts with a dot. '
-                      'If you cannot see your key file, copy the key text into the clipboard and tap “Paste from clipboard”, '
-                      'move the key into Downloads first, or just let LongLink generate a new ED25519 key pair for you.',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _privateKeyController,
-                      minLines: 8,
-                      maxLines: 14,
-                      decoration: const InputDecoration(
-                        labelText: 'Private key',
-                        alignLabelWithHint: true,
-                        hintText: 'Paste your OpenSSH private key here',
-                      ),
-                      validator: _secretRequiredValidator,
-                    ),
-                    if (_privateKeyController.text.trim().isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton.icon(
-                          onPressed: _copyPrivateKey,
-                          icon: const Icon(Icons.key),
-                          label: const Text('Copy private key'),
+                    SegmentedButton<_PrivateKeyStorageMode>(
+                      segments: const [
+                        ButtonSegment<_PrivateKeyStorageMode>(
+                          value: _PrivateKeyStorageMode.inline,
+                          label: Text('This profile only'),
+                          icon: Icon(Icons.person),
                         ),
-                      ),
-                    ],
+                        ButtonSegment<_PrivateKeyStorageMode>(
+                          value: _PrivateKeyStorageMode.reusable,
+                          label: Text('Shared keychain'),
+                          icon: Icon(Icons.key),
+                        ),
+                      ],
+                      selected: {_privateKeyStorageMode},
+                      onSelectionChanged: (selection) {
+                        setState(() {
+                          _privateKeyStorageMode = selection.first;
+                        });
+                      },
+                    ),
                     const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _passphraseController,
-                      obscureText: _obscurePassphrase,
-                      decoration: InputDecoration(
-                        labelText: 'Passphrase (optional)',
-                        suffixIcon: IconButton(
-                          onPressed: () => setState(() {
-                            _obscurePassphrase = !_obscurePassphrase;
-                          }),
-                          icon: Icon(
-                            _obscurePassphrase
-                                ? Icons.visibility
-                                : Icons.visibility_off,
+                    if (_privateKeyStorageMode ==
+                        _PrivateKeyStorageMode.reusable) ...[
+                      if (_availableKeys.isEmpty)
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'No shared keys yet. Open the keychain to import or generate one first.',
+                                ),
+                                const SizedBox(height: 12),
+                                OutlinedButton.icon(
+                                  onPressed: _openKeychain,
+                                  icon: const Icon(Icons.key),
+                                  label: const Text('Open keychain'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                      else ...[
+                        DropdownButtonFormField<String>(
+                          initialValue: _selectedReusableKeyId,
+                          decoration: const InputDecoration(
+                            labelText: 'Shared SSH key',
+                          ),
+                          items: _availableKeys
+                              .map(
+                                (key) => DropdownMenuItem<String>(
+                                  value: key.id,
+                                  child: Text(key.name),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (value) {
+                            setState(() => _selectedReusableKeyId = value);
+                          },
+                          validator: (value) {
+                            if (_authType == SshAuthType.privateKey &&
+                                _privateKeyStorageMode ==
+                                    _PrivateKeyStorageMode.reusable &&
+                                (value == null || value.trim().isEmpty)) {
+                              return 'Choose a shared key';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: _openKeychain,
+                              icon: const Icon(Icons.manage_accounts),
+                              label: const Text('Manage keychain'),
+                            ),
+                            const SizedBox(width: 12),
+                            if (selectedReusableKey != null)
+                              Expanded(
+                                child: Text(
+                                  selectedReusableKey.hasPassphrase
+                                      ? 'Passphrase saved with key'
+                                      : 'No passphrase saved',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ] else ...[
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          FilledButton.tonalIcon(
+                            onPressed: _pickPrivateKey,
+                            icon: const Icon(Icons.file_open),
+                            label: const Text('Import key file'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _pastePrivateKeyFromClipboard,
+                            icon: const Icon(Icons.content_paste),
+                            label: const Text('Paste from clipboard'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _generateKeyPair,
+                            icon: const Icon(Icons.key),
+                            label: const Text('Generate key pair'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _openKeychain,
+                            icon: const Icon(Icons.manage_accounts),
+                            label: const Text('Open keychain'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Android file pickers often hide the .ssh folder because it starts with a dot. If you cannot see your key file, paste it from the clipboard, move it into Downloads first, or let LongLink generate a new ED25519 key pair for you.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _privateKeyController,
+                        minLines: 8,
+                        maxLines: 14,
+                        decoration: const InputDecoration(
+                          labelText: 'Private key',
+                          alignLabelWithHint: true,
+                          hintText: 'Paste your OpenSSH private key here',
+                        ),
+                        validator: (value) {
+                          if (_authType == SshAuthType.privateKey &&
+                              _privateKeyStorageMode ==
+                                  _PrivateKeyStorageMode.inline &&
+                              (value == null || value.trim().isEmpty)) {
+                            return 'Required';
+                          }
+                          return null;
+                        },
+                      ),
+                      if (_privateKeyController.text.trim().isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton.icon(
+                            onPressed: _copyPrivateKey,
+                            icon: const Icon(Icons.key),
+                            label: const Text('Copy private key'),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _passphraseController,
+                        obscureText: _obscurePassphrase,
+                        decoration: InputDecoration(
+                          labelText: 'Passphrase (optional)',
+                          suffixIcon: IconButton(
+                            onPressed: () => setState(() {
+                              _obscurePassphrase = !_obscurePassphrase;
+                            }),
+                            icon: Icon(
+                              _obscurePassphrase
+                                  ? Icons.visibility
+                                  : Icons.visibility_off,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    if (_publicKeyPreview != null &&
-                        _publicKeyPreview!.isNotEmpty) ...[
+                    ],
+                    if ((_privateKeyStorageMode ==
+                                _PrivateKeyStorageMode.inline &&
+                            _publicKeyPreview != null &&
+                            _publicKeyPreview!.isNotEmpty) ||
+                        (_privateKeyStorageMode ==
+                                _PrivateKeyStorageMode.reusable &&
+                            reusablePublicKey != null &&
+                            reusablePublicKey.isNotEmpty)) ...[
                       const SizedBox(height: 12),
                       Row(
                         children: [
@@ -652,11 +848,19 @@ class _ProfileFormPageState extends State<ProfileFormPage> {
                           ).colorScheme.surfaceContainerHighest,
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: SelectableText(_publicKeyPreview!),
+                        child: SelectableText(
+                          _privateKeyStorageMode ==
+                                  _PrivateKeyStorageMode.reusable
+                              ? reusablePublicKey!
+                              : _publicKeyPreview!,
+                        ),
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Add this public key to the server\'s authorized_keys. For generated keys, this is the line you need on the server side.',
+                        _privateKeyStorageMode ==
+                                _PrivateKeyStorageMode.reusable
+                            ? 'This is the public key for the selected shared keychain entry.'
+                            : 'Add this public key to the server\'s authorized_keys. For generated keys, this is the line you need on the server side.',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ],

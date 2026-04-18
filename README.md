@@ -7,14 +7,18 @@ Android-first Flutter SSH client for people who need longer connection timeouts 
 - Save SSH profiles on device
 - Create, edit, and delete profiles
 - Support password auth and private key auth
+- Reuse imported/generated private keys across multiple profiles with a shared in-app **SSH keychain**
+- Keep backwards compatibility with older profiles that still store inline private key secrets per profile
 - Import private keys from a file or paste them directly from the clipboard
 - Generate a fresh ED25519 key pair inside the app and copy either the public or private key when needed
-- Store non-secret profile data in `shared_preferences`
-- Store password / private key / passphrase in `flutter_secure_storage`
+- Store non-secret profile data and key metadata in `shared_preferences`
+- Store passwords / private keys / passphrases in `flutter_secure_storage`
 - Use `SSHSocket.connect(host, port, timeout: Duration(seconds: ...))` so each profile can set a longer connect timeout
 - Use `SSHClient keepAliveInterval` from the saved profile
+- Keep terminal sessions alive in app memory when you leave the terminal page, then resume them from the home screen without reconnecting
+- Show a dedicated **Live sessions** list on the home screen for active/suspended terminals
+- Move reconnect into a safer overflow menu and keep explicit disconnect as a separate action
 - Open an interactive remote shell with `dartssh2` + `xterm`
-- Show connection status and connection failure messages clearly
 - Add a small Android-friendly shortcut row for Tab / Esc / Enter / Ctrl+C / arrows
 - Add tmux-oriented quick buttons, including `tmux C-a` and one-tap `tmux detach`
 
@@ -22,7 +26,7 @@ Android-first Flutter SSH client for people who need longer connection timeouts 
 
 - **Android only**
 - MVP quality, intentionally straightforward
-- Current version: **0.1.5+6**
+- Current version: **0.1.6+7**
 
 ## Requirements
 
@@ -65,11 +69,38 @@ Each saved profile includes:
 - Username
 - Auth type: password or private key
 - Password or private key
-- Private key import via file picker or clipboard paste
-- Built-in ED25519 key pair generation with public/private key copy support
+- Private key source:
+  - profile-only inline secret, or
+  - reusable shared keychain entry
 - Optional passphrase for encrypted private keys
 - Connection timeout in seconds
 - Keepalive interval in seconds
+
+## Shared SSH keychain
+
+LongLink now has a simple in-app **SSH keychain**:
+
+- Open it from the key icon on the home screen
+- Import a private key once from file / clipboard, or generate a new ED25519 key pair
+- Save the key in secure storage
+- Reuse the same saved key across multiple SSH profiles
+- Copy the stored public key when you need to add it to `authorized_keys`
+
+Backwards compatibility:
+
+- Existing profiles with inline private keys still work
+- Editing those profiles keeps the inline-key option available
+- New or updated profiles can switch to a shared keychain entry at any time
+
+## Live sessions / suspended terminals
+
+Terminal behavior changed:
+
+- Leaving the terminal page **does not disconnect by default**
+- The terminal UI is suspended, while the SSH session stays alive in memory/process
+- The home screen now shows a **Live sessions** section
+- Tap a suspended session to jump straight back into the same shell without reconnecting
+- Use the terminal overflow menu or the home-screen live session menu to reconnect or disconnect explicitly
 
 ## CI / release workflow
 
@@ -88,20 +119,20 @@ Notes:
 
 ## Validation run
 
-Validated in this environment:
+Validated in this environment after this iteration:
 
-- `flutter pub get` ✅
-- `dart format lib test` ✅
-- `flutter analyze` ✅
-- `flutter test` ✅
-
-Local APK build status:
-
-- `flutter build apk --release` ❌ blocked in this environment because no Android SDK is installed (`No Android SDK found. Try setting the ANDROID_HOME environment variable.`)
+- `flutter pub get`
+- `dart format lib test`
+- `flutter analyze`
+- `flutter test`
 
 ## Private key import note
 
-On Android, the system file picker often hides the `.ssh` folder because dot-prefixed folders are treated as hidden. This app now includes a **Paste from clipboard** shortcut for private keys, built-in **Generate key pair** support, and file import reads the key content directly instead of relying on file extensions.
+On Android, the system file picker often hides the `.ssh` folder because dot-prefixed folders are treated as hidden. This app includes:
+
+- **Paste from clipboard** for private keys
+- built-in **Generate key pair** support
+- a reusable **SSH keychain** so you do not have to keep copying the same private key into multiple profiles
 
 If you still cannot browse to a key file:
 
@@ -112,6 +143,7 @@ If you still cannot browse to a key file:
 ## Known limitations
 
 - **Host key verification is intentionally permissive right now.** For MVP, the app auto-accepts host keys so connections succeed quickly. This is documented in code and should be replaced with real host verification / known_hosts handling later.
+- Suspended sessions are kept in app memory only; they are not restored after the app process is killed.
 - No SFTP / file transfer support
 - No SSH agent forwarding
 - No port forwarding UI

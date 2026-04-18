@@ -24,6 +24,7 @@ class SshProfile {
     required this.authType,
     required this.connectionTimeoutSeconds,
     required this.keepAliveIntervalSeconds,
+    this.reusableKeyId,
   });
 
   final String id;
@@ -34,6 +35,11 @@ class SshProfile {
   final SshAuthType authType;
   final int connectionTimeoutSeconds;
   final int keepAliveIntervalSeconds;
+  final String? reusableKeyId;
+
+  bool get usesReusableKey =>
+      authType == SshAuthType.privateKey &&
+      (reusableKeyId?.trim().isNotEmpty ?? false);
 
   SshProfile copyWith({
     String? id,
@@ -44,6 +50,8 @@ class SshProfile {
     SshAuthType? authType,
     int? connectionTimeoutSeconds,
     int? keepAliveIntervalSeconds,
+    String? reusableKeyId,
+    bool clearReusableKeyId = false,
   }) {
     return SshProfile(
       id: id ?? this.id,
@@ -56,6 +64,9 @@ class SshProfile {
           connectionTimeoutSeconds ?? this.connectionTimeoutSeconds,
       keepAliveIntervalSeconds:
           keepAliveIntervalSeconds ?? this.keepAliveIntervalSeconds,
+      reusableKeyId: clearReusableKeyId
+          ? null
+          : reusableKeyId ?? this.reusableKeyId,
     );
   }
 
@@ -69,6 +80,7 @@ class SshProfile {
       'authType': authType.value,
       'connectionTimeoutSeconds': connectionTimeoutSeconds,
       'keepAliveIntervalSeconds': keepAliveIntervalSeconds,
+      'reusableKeyId': reusableKeyId,
     };
   }
 
@@ -82,7 +94,13 @@ class SshProfile {
       authType: SshAuthType.fromValue(json['authType'] as String? ?? ''),
       connectionTimeoutSeconds: json['connectionTimeoutSeconds'] as int? ?? 30,
       keepAliveIntervalSeconds: json['keepAliveIntervalSeconds'] as int? ?? 15,
+      reusableKeyId: _blankToNull(json['reusableKeyId'] as String?),
     );
+  }
+
+  static String? _blankToNull(String? value) {
+    final trimmed = value?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
   }
 }
 
@@ -93,7 +111,7 @@ class SshProfileSecrets {
   final String? privateKey;
   final String? passphrase;
 
-  bool get hasPassword => (password ?? '').isNotEmpty;
-  bool get hasPrivateKey => (privateKey ?? '').isNotEmpty;
-  bool get hasPassphrase => (passphrase ?? '').isNotEmpty;
+  bool get hasPassword => (password ?? '').trim().isNotEmpty;
+  bool get hasPrivateKey => (privateKey ?? '').trim().isNotEmpty;
+  bool get hasPassphrase => (passphrase ?? '').trim().isNotEmpty;
 }
